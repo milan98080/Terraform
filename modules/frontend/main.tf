@@ -1,65 +1,20 @@
-resource "aws_s3_bucket" "bucket" {
+resource "aws_s3_bucket" "Site_Origin" {
   bucket = var.bucket_name
-  tags = {
-    Name = var.bucket_name
-  }
 }
 
-resource "aws_cloudfront_distribution" "distribution" {
-
-  origin {
-    domain_name              = var.domain_name
-    origin_id                = aws_s3_bucket.bucket.id
-    origin_access_control_id = aws_cloudfront_origin_access_control.Site_Access.id
-  }
-
-  enabled             = var.distribution_enabled
-  default_root_object = var.distribution_default_root_object
-
-  restrictions {
-    geo_restriction {
-      restriction_type = var.distribution_restriction_type
-      locations        = var.distribution_geo_restriction_locations
-    }
-  }
-
-  default_cache_behavior {
-    allowed_methods        = var.distribution_allowed_methods
-    cached_methods         = var.distribution_cached_methods
-    target_origin_id       = var.bucket_origin_id
-    viewer_protocol_policy = var.distribution_viewer_protocol_policy
-
-    forwarded_values {
-      query_string = var.distribution_forwarded_values_query_string
-
-      cookies {
-        forward = var.distribution_forwarded_values_cookies_forward
-      }
-    }
-  }
-
-  viewer_certificate {
-    cloudfront_default_certificate = var.distribution_viewer_certificate_cloudfront_default_certificate
-  }
-
+resource "aws_s3_bucket_policy" "origin" {
+  depends_on = [
+    aws_cloudfront_distribution.Site_Access
+  ]
+  bucket = aws_s3_bucket.Site_Origin.id
+  policy = data.aws_iam_policy_document.origin.json
 }
 
-resource "aws_cloudfront_origin_access_control" "Site_Access" {
-  name                              = "Security_Pillar100_CF_S3_OAC"
-  description                       = "OAC setup for security pillar 100"
-  origin_access_control_origin_type = "s3"
-  signing_behavior                  = "always"
-  signing_protocol                  = "sigv4"
-}
-
-## Assign policy to allow CloudFront to reach S3 bucket
-resource "aws_s3_bucket_policy" "bucket_policy" {
-  bucket = aws_s3_bucket.bucket.id
-  policy = data.aws_iam_policy_document.bucket_policy.json
-}
-
-## Create policy to allow CloudFront to reach S3 bucket
-data "aws_iam_policy_document" "bucket_policy" {
+data "aws_iam_policy_document" "origin" {
+  depends_on = [
+    aws_cloudfront_distribution.Site_Access,
+    aws_s3_bucket.Site_Origin
+  ]
   statement {
     sid    = "3"
     effect = "Allow"
@@ -71,15 +26,75 @@ data "aws_iam_policy_document" "bucket_policy" {
       type        = "Service"
     }
     resources = [
-      "arn:aws:s3:::${aws_s3_bucket.bucket.bucket_name}/*"
+      "arn:aws:s3:::${aws_s3_bucket.Site_Origin.bucket}/*"
     ]
     condition {
       test     = "StringEquals"
       variable = "AWS:SourceArn"
 
       values = [
-        aws_cloudfront_distribution.distribution.arn
+        aws_cloudfront_distribution.Site_Access.arn
       ]
     }
   }
+}
+
+resource "aws_s3_bucket_versioning" "Site_Origin" {
+  bucket = aws_s3_bucket.Site_Origin.bucket
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_cloudfront_distribution" "Site_Access" {
+  depends_on = [
+    aws_s3_bucket.Site_Origin,
+    aws_cloudfront_origin_access_control.Site_Access
+  ]
+  aliases = [var.domain_name]
+  origin {
+    domain_name              = aws_s3_bucket.Site_Origin.bucket_regional_domain_name
+    origin_id                = aws_s3_bucket.Site_Origin.id
+    origin_access_control_id = aws_cloudfront_origin_access_control.Site_Access.id
+  }
+
+  enabled             = true
+  default_root_object = "index.html"
+
+  restrictions {
+    geo_restriction {
+      restriction_type = "whitelist"
+      locations        = ["US", "CA"]
+    }
+  }
+
+  default_cache_behavior {
+    allowed_methods        = ["GET", "HEAD"]
+    cached_methods         = ["GET", "HEAD"]
+    target_origin_id       = aws_s3_bucket.Site_Origin.id
+    viewer_protocol_policy = "https-only"
+
+    forwarded_values {
+      query_string = false
+
+      cookies {
+        forward = "none"
+      }
+
+    }
+  }
+
+  viewer_certificate {
+    cloudfront_default_certificate = true
+  }
+
+}
+
+
+resource "aws_cloudfront_origin_access_control" "Site_Access" {
+  name                              = "CF_S3_OAC"
+  description                       = "OAC setup"
+  origin_access_control_origin_type = "s3"
+  signing_behavior                  = "always"
+  signing_protocol                  = "sigv4"
 }
